@@ -8,6 +8,7 @@ import csv
 # Automatically create 'ligand.txt' by listing all .pdbqt files in the 'ligand' folder
 ligand_folder = './ligand'
 ligand_file = 'ligand.txt'
+out_folder = './out'
 
 # List all .pdbqt files in the 'ligand' folder
 ligand_list = [f for f in os.listdir(ligand_folder) if f.endswith('.pdbqt')]
@@ -24,6 +25,10 @@ vina_path = './vina'  # ./ indicates the current directory
 log_folder = 'logfile'
 if not os.path.exists(log_folder):
     os.makedirs(log_folder)
+
+# Create a folder for output files if it doesn't exist
+if not os.path.exists(out_folder):
+    os.makedirs(out_folder)
 
 # Open CSV file to record values from log files (keep it open during the loop)
 with open('logfile_summary.csv', 'w', newline='') as csvfile:
@@ -56,7 +61,7 @@ with open('logfile_summary.csv', 'w', newline='') as csvfile:
         # Construct the command to run AutoDock Vina
         ligand_path = os.path.join(ligand_folder, ligand)
         log_file = os.path.join(log_folder, f'{base_name}_log.log')
-        command = [vina_path, '--config', 'config.txt', '--ligand', ligand_path, '--log', log_file]
+        command = [vina_path, '--config', 'config.txt', '--ligand', ligand_path, '--log', log_file, '--out', os.path.join(out_folder, f'{base_name}_out.pdbqt')]
 
         # Execute the command
         try:
@@ -77,4 +82,3 @@ with open('logfile_summary.csv', 'w', newline='') as csvfile:
                         csvwriter.writerow([base_name, 'N/A'])
         except subprocess.CalledProcessError:
             print(f"Failed to execute: {' '.join(command)}")
-
