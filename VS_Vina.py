@@ -1,109 +1,112 @@
-#!/usr/bin/env python3
-
 import os
 import subprocess
 import csv
+import time
 
-# Automatically create 'ligand.txt' by listing all .pdbqt files in the 'ligand' folder
+# Define folders and files
 ligand_folder = './ligand'
 ligand_file = 'ligand.txt'
 out_folder = './out'
-
-# List all .pdbqt files in the 'ligand' folder
-ligand_list = [f for f in os.listdir(ligand_folder) if f.endswith('.pdbqt')]
-
-# Write the list of ligands to 'ligand.txt'
-with open(ligand_file, 'w') as lf:
-    for ligand in ligand_list:
-        lf.write(f"{ligand}\n")
-
-# Define the path to the Vina executable (in the current working directory)
-vina_path = './vina'
-
-# Create a folder for log files
-log_folder = 'logfile'
-if not os.path.exists(log_folder):
-    os.makedirs(log_folder)
-
-# Create a folder for output files if it doesn't exist
-if not os.path.exists(out_folder):
-    os.makedirs(out_folder)
-
-# File to store unsorted binding affinities
+log_folder = './logfile'
+completed_ligands_file = 'completed_ligands.txt'
 unsorted_csv_file = 'logfile_summary_unsorted.csv'
 sorted_csv_file = 'logfile_summary.csv'
+vina_path = './vina'
+config_file = 'config.txt'
 
-with open(unsorted_csv_file, 'w', newline='') as csvfile:
-    csvwriter = csv.writer(csvfile)
-    csvwriter.writerow(['Ligand', 'Binding Affinity (kcal/mol)'])
+# Ensure necessary directories exist
+os.makedirs(log_folder, exist_ok=True)
+os.makedirs(out_folder, exist_ok=True)
 
-    # Read the ligands from 'ligand.txt'
-    with open(ligand_file, 'r') as fh:
-        arr_file = fh.readlines()
+# Load completed ligands
+completed_ligands = set()
+if os.path.exists(completed_ligands_file):
+    with open(completed_ligands_file, 'r') as f:
+        completed_ligands = set(f.read().splitlines())
 
-    # Iterate over each ligand in the list
-    for ligand in arr_file:
-        ligand = ligand.strip()
+# Function to run docking for a given ligand
+def run_docking(ligand):
+    base_name = os.path.splitext(os.path.basename(ligand))[0]
+    ligand_path = os.path.join(ligand_folder, ligand)
+    log_file = os.path.join(log_folder, f'{base_name}_log.log')
+    out_file = os.path.join(out_folder, f'{base_name}_out.pdbqt')
+    
+    command = [
+        vina_path, '--config', config_file, '--ligand', ligand_path,
+        '--log', log_file, '--out', out_file
+    ]
+    
+    try:
+        subprocess.run(command, check=True)
+        print(f"Successfully processed: {ligand}")
+        
+        # Extract binding affinity from log file
+        binding_affinity = 'N/A'
+        if os.path.isfile(log_file):
+            with open(log_file, 'r') as log_fh:
+                for line in log_fh:
+                    if line.strip().startswith('1'):
+                        parts = line.split()
+                        if len(parts) >= 2:
+                            binding_affinity = parts[1]
+                            break
+        
+        # Write result to CSV
+        with open(unsorted_csv_file, 'a', newline='') as csvfile:
+            csvwriter = csv.writer(csvfile)
+            csvwriter.writerow([base_name, float(binding_affinity) if binding_affinity != 'N/A' else 'N/A'])
+        
+        # Mark as completed
+        with open(completed_ligands_file, 'a') as f:
+            f.write(ligand + '\n')
+        
+        return True
+    except subprocess.CalledProcessError:
+        print(f"Failed to process: {ligand}")
+        return False
 
-        # Skip if the line is empty
-        if not ligand:
-            continue
+# Initialize CSV file if it doesn't exist
+if not os.path.exists(unsorted_csv_file):
+    with open(unsorted_csv_file, 'w', newline='') as csvfile:
+        csv.writer(csvfile).writerow(['Ligand', 'Binding Affinity (kcal/mol)'])
 
-        print(f"Processing ligand: {ligand}")
+print("Monitoring for new ligands. Press Ctrl+C to stop.")
+no_new_ligand_counter = 0
+while True:
+    try:
+        # Get list of .pdbqt files
+        ligand_list = [f for f in os.listdir(ligand_folder) if f.endswith('.pdbqt')]
+        new_ligands = [ligand for ligand in ligand_list if ligand not in completed_ligands]
+        
+        if new_ligands:
+            no_new_ligand_counter = 0
+            for ligand in new_ligands:
+                print(f"Processing ligand: {ligand}")
+                success = run_docking(ligand)
+                if success:
+                    completed_ligands.add(ligand)
+        else:
+            no_new_ligand_counter += 1
+            print("No new ligands found.")
+        
+        # Sort the results periodically
+        with open(unsorted_csv_file, 'r') as infile, open(sorted_csv_file, 'w', newline='') as outfile:
+            csvreader = csv.reader(infile)
+            csvwriter = csv.writer(outfile)
+            header = next(csvreader)
+            data = [row for row in csvreader if row[1] != 'N/A']
+            data = sorted(data, key=lambda x: float(x[1]))
+            csvwriter.writerow(header)
+            csvwriter.writerows(data)
+        
+        if no_new_ligand_counter >= 3:
+            print("No new ligands detected for 3 seconds. Exiting...")
+            break
+        
+        time.sleep(1)  # Check every second
+    except KeyboardInterrupt:
+        print("Script stopped by user.")
+        break
+    except Exception as e:
+        print(f"Error encountered: {e}")
 
-        base_name = os.path.splitext(os.path.basename(ligand))[0]
-
-        # Skip invalid ligand names
-        if not base_name:
-            print(f"Skipping invalid ligand name: {ligand}")
-            continue
-
-        # Construct the command to run AutoDock Vina
-        ligand_path = os.path.join(ligand_folder, ligand)
-        log_file = os.path.join(log_folder, f'{base_name}_log.log')
-        command = [
-            vina_path, '--config', 'config.txt', '--ligand', ligand_path,
-            '--log', log_file, '--out', os.path.join(out_folder, f'{base_name}_out.pdbqt')
-        ]
-
-        # Execute the command
-        try:
-            subprocess.run(command, check=True)
-            print(f"Successfully processed: {ligand}")
-
-            # Parse the Vina log file to extract mode 1 binding affinity
-            if os.path.isfile(log_file):
-                with open(log_file, 'r') as log_fh:
-                    for line in log_fh:
-                        if line.strip().startswith('1'):  # Look for mode 1
-                            parts = line.split()
-                            if len(parts) >= 2:
-                                binding_affinity = parts[1]  # Affinity is in the second column
-                                print(f"Ligand {base_name} - Binding Affinity (mode 1): {binding_affinity}")
-                                # Write ligand name and binding affinity to the unsorted CSV
-                                csvwriter.writerow([base_name, float(binding_affinity)])
-                                break
-                    else:
-                        print(f"No binding affinity found for {ligand}")
-                        csvwriter.writerow([base_name, 'N/A'])
-        except subprocess.CalledProcessError:
-            print(f"Failed to execute: {' '.join(command)}")
-
-# Sort the CSV file based on binding affinity
-try:
-    with open(unsorted_csv_file, 'r') as infile, open(sorted_csv_file, 'w', newline='') as outfile:
-        csvreader = csv.reader(infile)
-        csvwriter = csv.writer(outfile)
-
-        # Read the header and data rows
-        header = next(csvreader)
-        data = [row for row in csvreader if row[1] != 'N/A']  # Exclude rows with 'N/A'
-        data = sorted(data, key=lambda x: float(x[1]))  # Sort by binding affinity (column 1)
-
-        # Write the sorted data back to the new file
-        csvwriter.writerow(header)
-        csvwriter.writerows(data)
-
-    print(f"Results have been sorted and saved to '{sorted_csv_file}'")
-except Exception as e:
-    print(f"Failed to sort results: {e}")
